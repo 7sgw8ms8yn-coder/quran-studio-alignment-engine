@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: quran-studio-alignment-engine
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+
+    envVars:
+      - key: ALIGNMENT_API_KEY
+        sync: false
+
+      - key: MAXIMUM_UPLOAD_MB
+        value: "50"
+
+      - key: WHISPER_MODEL_NAME
+        value: "small"
