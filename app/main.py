@@ -23,7 +23,11 @@ from app.models import (
     JobStatusResponse,
 )
 from app.security import verify_api_key
-
+from app.services.quran_corpus_service import (
+    QuranCorpus,
+    QuranCorpusError,
+    load_quran_corpus,
+)
 
 AUDIO_EXTENSIONS = {
     ".mp3",
@@ -45,14 +49,37 @@ VIDEO_EXTENSIONS = {
 
 ALLOWED_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
 
+class EngineState:
+    def __init__(self) -> None:
+        self.quran_corpus: QuranCorpus | None = None
+        self.corpus_error: str | None = None
 
+    @property
+    def corpus_loaded(self) -> bool:
+        return self.quran_corpus is not None
+
+
+engine_state = EngineState()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     Path(settings.temporary_directory).mkdir(
         parents=True,
         exist_ok=True,
     )
+
+    try:
+        engine_state.quran_corpus = load_quran_corpus()
+        engine_state.corpus_error = None
+    except QuranCorpusError as error:
+        engine_state.quran_corpus = None
+        engine_state.corpus_error = str(error)
+
+    app.state.quran_corpus = engine_state.quran_corpus
+
     yield
+
+    engine_state.quran_corpus = None
+    app.state.quran_corpus = None
 
 
 app = FastAPI(
@@ -153,24 +180,30 @@ async def root() -> dict[str, str]:
     response_model=HealthResponse,
 )
 async def health() -> HealthResponse:
-    ready = (
-        settings.model_loaded
-        and settings.corpus_loaded
-    )
+    corpus_loaded = engine_state.corpus_loaded
+    model_loaded = settings.model_loaded
+
+    fully_ready = corpus_loaded and model_loaded
+
+    if fully_ready:
+        message = "The Quran Alignment Engine is ready."
+    elif not corpus_loaded:
+        message = (
+            "The API is online, but the verified Quran corpus "
+            "could not be loaded."
+        )
+    else:
+        message = (
+            "The API and verified Quran corpus are ready. "
+            "The speech-recognition model will be connected next."
+        )
 
     return HealthResponse(
-        status="healthy" if ready else "not_ready",
+        status="healthy" if fully_ready else "not_ready",
         engine_version=settings.engine_version,
-        corpus_loaded=settings.corpus_loaded,
-        model_loaded=settings.model_loaded,
-        message=(
-            "The Quran Alignment Engine is ready."
-            if ready
-            else (
-                "The API is online. The Quran corpus and "
-                "speech model will be connected next."
-            )
-        ),
+        corpus_loaded=corpus_loaded,
+        model_loaded=model_loaded,
+        message=message,
     )
 
 
@@ -298,3 +331,76 @@ async def cancel_job(
         status="cancelled",
         message=job.message,
     )
+@app.get(
+    "/quran/{surah_number}/{ayah_number}",
+    dependencies=[Depends(verify_api_key)],
+)
+async def get_quran_ayah(
+    surah_number: int,
+    ayah_number: int,
+) -> dict[str, object]:
+    corpus = engine_state.quran_corpus
+
+    if corpus is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The Quran corpus is not available.",
+        )
+
+    try:
+        ayah = corpus.get_ayah(
+            surah_number,
+            ayah_number,
+        )
+    except KeyError as error:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="The requested Ayah was not found.",
+        ) from error
+
+    return {
+        "surah_number": ayah.surah_number,
+        "ayah_number": ayah.ayah_number,
+        "text": ayah.text,
+    }
+
+
+@app.get(
+    "/quran/search",
+    dependencies=[Depends(verify_api_key)],
+)
+async def search_quran(
+    query: str,
+    limit: int = 10,
+) -> dict[str, object]:
+    corpus = engine_state.quran_corpus
+
+    if corpus is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The Quran corpus is not available.",
+        )
+
+    cleaned_query = query.strip()
+
+    if len(cleaned_query) < 3:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Enter at least three Arabic characters.",
+        )
+
+    safe_limit = max(1, min(limit, 25))
+    matches = corpus.search_contains(cleaned_query)[:safe_limit]
+
+    return {
+        "query": cleaned_query,
+        "count": len(matches),
+        "results": [
+            {
+                "surah_number": ayah.surah_number,
+                "ayah_number": ayah.ayah_number,
+                "text": ayah.text,
+            }
+            for ayah in matches
+        ],
+    }
