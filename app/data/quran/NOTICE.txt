@@ -1,0 +1,12 @@
+Quran text source: Tanzil Project
+
+The Quran text included in this project is distributed under the
+Creative Commons Attribution 3.0 License.
+
+Permission is granted to copy and distribute verbatim copies of the text.
+Changing the Quran text is not allowed.
+
+Source:
+Tanzil Project — tanzil.net
+
+The application must provide visible attribution to Tanzil Project.
