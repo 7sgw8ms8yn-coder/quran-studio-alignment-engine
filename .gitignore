@@ -5,4 +5,15 @@ __pycache__/
 .env
 .DS_Store
 uploads/
-tmp/
+tmp/test-recitation.*
+
+# Local test audio
+test-recitation.*
+*.mp3
+*.wav
+*.m4a
+
+# Python cache files
+__pycache__/
+*.py[cod]
+quran-model-output.txt

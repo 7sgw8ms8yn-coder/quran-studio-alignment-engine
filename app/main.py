@@ -28,6 +28,7 @@ from app.services.quran_corpus_service import (
     QuranCorpusError,
     load_quran_corpus,
 )
+from app.services.speech_recognition_service import speech_recognizer
 
 AUDIO_EXTENSIONS = {
     ".mp3",
@@ -403,4 +404,18 @@ async def search_quran(
             }
             for ayah in matches
         ],
+    }
+
+
+@app.get(
+    "/speech/model-status",
+    dependencies=[Depends(verify_api_key)],
+)
+async def speech_model_status() -> dict[str, object]:
+    return {
+        "model_name": speech_recognizer.model_name,
+        "device": speech_recognizer.device,
+        "compute_type": speech_recognizer.compute_type,
+        "loaded": speech_recognizer.is_loaded,
+        "load_error": speech_recognizer.load_error,
     }

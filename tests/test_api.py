@@ -50,3 +50,23 @@ def test_quran_corpus_loads_during_startup() -> None:
         assert payload["status"] == "not_ready"
         assert payload["corpus_loaded"] is True
         assert payload["model_loaded"] is False
+
+
+def test_speech_model_status_requires_authentication() -> None:
+    with TestClient(app) as test_client:
+        response = test_client.get("/speech/model-status")
+
+        assert response.status_code == 401
+
+
+def test_health_reports_speech_model_unloaded() -> None:
+    with TestClient(app) as test_client:
+        response = test_client.get("/health")
+
+        assert response.status_code == 200
+
+        payload = response.json()
+
+        assert payload["corpus_loaded"] is True
+        assert payload["model_loaded"] is False
+        assert payload["status"] == "not_ready"
