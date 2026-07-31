@@ -30,6 +30,7 @@ class AlignmentJob:
 
     warnings: list[str] = field(default_factory=list)
     error: str | None = None
+    result: dict[str, object] | None = None
 
     created_at: datetime = field(default_factory=utc_now)
     updated_at: datetime = field(default_factory=utc_now)
@@ -63,6 +64,96 @@ class InMemoryJobStore:
     def get(self, job_id: str) -> AlignmentJob | None:
         with self._lock:
             return self._jobs.get(job_id)
+
+    def start(self, job_id: str) -> AlignmentJob | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+
+            if job is None:
+                return None
+
+            if job.status == "cancelled":
+                return job
+
+            job.status = "processing"
+            job.progress = 5
+            job.current_stage = "starting"
+            job.message = "The Quran alignment job has started."
+            job.error = None
+            job.updated_at = utc_now()
+
+            return job
+
+    def update(
+        self,
+        job_id: str,
+        *,
+        progress: int,
+        current_stage: str,
+        message: str,
+    ) -> AlignmentJob | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+
+            if job is None:
+                return None
+
+            if job.status == "cancelled":
+                return job
+
+            job.status = "processing"
+            job.progress = max(0, min(progress, 99))
+            job.current_stage = current_stage
+            job.message = message
+            job.updated_at = utc_now()
+
+            return job
+
+    def complete(
+        self,
+        job_id: str,
+        result: dict[str, object],
+    ) -> AlignmentJob | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+
+            if job is None:
+                return None
+
+            if job.status == "cancelled":
+                return job
+
+            job.status = "completed"
+            job.progress = 100
+            job.current_stage = "completed"
+            job.message = "The Quran alignment job completed successfully."
+            job.result = result
+            job.error = None
+            job.updated_at = utc_now()
+
+            return job
+
+    def fail(
+        self,
+        job_id: str,
+        error: str,
+    ) -> AlignmentJob | None:
+        with self._lock:
+            job = self._jobs.get(job_id)
+
+            if job is None:
+                return None
+
+            if job.status == "cancelled":
+                return job
+
+            job.status = "failed"
+            job.current_stage = "failed"
+            job.message = "The Quran alignment job failed."
+            job.error = error
+            job.updated_at = utc_now()
+
+            return job
 
     def cancel(self, job_id: str) -> AlignmentJob | None:
         with self._lock:

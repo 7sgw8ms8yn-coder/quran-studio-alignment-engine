@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import (
+    BackgroundTasks,
     Depends,
     FastAPI,
     File,
@@ -440,11 +441,7 @@ async def speech_model_status() -> dict[str, object]:
     }
 
 
-@app.post(
-    "/quran/align-audio",
-    dependencies=[Depends(verify_api_key)],
-)
-async def align_quran_audio(
+async def _execute_quran_alignment(
     file: UploadFile = File(...),
 ) -> dict[str, object]:
     filename = file.filename or "uploaded-media"
@@ -560,3 +557,213 @@ async def align_quran_audio(
             for ayah in result.ayahs
         ],
     }
+
+# --- ASYNC QURAN ALIGNMENT JOB FLOW ---
+
+
+async def _process_quran_alignment_job(
+    job_id: str,
+    source_path_text: str,
+    original_filename: str,
+    staging_directory_text: str,
+) -> None:
+    """Run Quran alignment after the upload request has returned."""
+
+    source_path = Path(source_path_text)
+    staging_directory = Path(staging_directory_text)
+    upload: UploadFile | None = None
+
+    try:
+        job_store.start(job_id)
+
+        job_store.update(
+            job_id,
+            progress=10,
+            current_stage="preparing_audio",
+            message="Preparing the uploaded recitation for Quran alignment.",
+        )
+
+        source_handle = source_path.open("rb")
+        upload = UploadFile(
+            file=source_handle,
+            filename=original_filename,
+        )
+
+        job_store.update(
+            job_id,
+            progress=25,
+            current_stage="transcribing",
+            message="Transcribing and analysing the Quran recitation.",
+        )
+
+        result = await _execute_quran_alignment(upload)
+
+        job_store.update(
+            job_id,
+            progress=90,
+            current_stage="verifying_quran_text",
+            message="Verifying the transcript against the Quran corpus.",
+        )
+
+        job_store.complete(job_id, result)
+
+    except Exception as error:
+        job_store.fail(
+            job_id,
+            f"{type(error).__name__}: {error}",
+        )
+
+    finally:
+        if upload is not None:
+            try:
+                await upload.close()
+            except Exception:
+                pass
+
+        shutil.rmtree(
+            staging_directory,
+            ignore_errors=True,
+        )
+
+
+@app.post(
+    "/quran/align-audio",
+    response_model=JobAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(verify_api_key)],
+)
+async def align_quran_audio(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+) -> JobAcceptedResponse:
+    """
+    Accept Quran audio immediately and process it in the background.
+
+    The client receives a job ID and can poll /jobs/{job_id}.
+    """
+
+    filename = Path(
+        file.filename or "uploaded-recitation"
+    ).name
+
+    extension = Path(filename).suffix.lower()
+
+    if extension not in ALLOWED_EXTENSIONS:
+        await file.close()
+
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Unsupported audio or video format.",
+        )
+
+    staging_directory = Path(
+        tempfile.mkdtemp(prefix="quran-alignment-job-")
+    )
+
+    source_path = staging_directory / f"source{extension}"
+    maximum_bytes = settings.maximum_upload_mb * 1024 * 1024
+    received_bytes = 0
+
+    try:
+        with source_path.open("wb") as destination:
+            while True:
+                chunk = await file.read(1024 * 1024)
+
+                if not chunk:
+                    break
+
+                received_bytes += len(chunk)
+
+                if received_bytes > maximum_bytes:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        detail=(
+                            "The uploaded file exceeds the "
+                            f"{settings.maximum_upload_mb} MB limit."
+                        ),
+                    )
+
+                destination.write(chunk)
+
+    except Exception:
+        shutil.rmtree(
+            staging_directory,
+            ignore_errors=True,
+        )
+        raise
+
+    finally:
+        await file.close()
+
+    if received_bytes == 0:
+        shutil.rmtree(
+            staging_directory,
+            ignore_errors=True,
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="The uploaded media file is empty.",
+        )
+
+    job = job_store.create(
+        client_job_id=str(uuid4()),
+        project_id="quran-alignment",
+        owner_id="api",
+        original_filename=filename,
+    )
+
+    background_tasks.add_task(
+        _process_quran_alignment_job,
+        job.id,
+        str(source_path),
+        filename,
+        str(staging_directory),
+    )
+
+    return JobAcceptedResponse(
+        job_id=job.id,
+        client_job_id=job.client_job_id,
+        project_id=job.project_id,
+        status=job.status,
+        created_at=job.created_at,
+    )
+
+
+@app.get(
+    "/jobs/{job_id}/result",
+    dependencies=[Depends(verify_api_key)],
+)
+async def get_quran_alignment_result(
+    job_id: str,
+) -> dict[str, object]:
+    """
+    Return job progress or the completed Quran alignment result.
+    """
+
+    job = job_store.get(job_id)
+
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Alignment job not found.",
+        )
+
+    if job.status == "completed" and job.result is not None:
+        return {
+            "job_id": job.id,
+            "status": job.status,
+            "progress": job.progress,
+            "result": job.result,
+        }
+
+    return {
+        "job_id": job.id,
+        "status": job.status,
+        "progress": job.progress,
+        "current_stage": job.current_stage,
+        "message": job.message,
+        "error": job.error,
+        "result": None,
+    }
+
