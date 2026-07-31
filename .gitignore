@@ -17,3 +17,5 @@ test-recitation.*
 __pycache__/
 *.py[cod]
 quran-model-output.txt
+.local-api-key
+alignment-response.json

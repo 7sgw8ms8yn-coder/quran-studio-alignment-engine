@@ -1,3 +1,6 @@
+import asyncio
+import shutil
+from uuid import uuid4
 import json
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -23,6 +26,15 @@ from app.models import (
     JobStatusResponse,
 )
 from app.security import verify_api_key
+from app.services.media_service import (
+    MediaPreparationError,
+    prepare_audio_for_alignment,
+)
+from app.services.quran_alignment_service import (
+    QuranAlignmentError,
+    QuranAlignmentService,
+)
+from app.services.speech_recognition_service import ArabicSpeechRecognizer
 from app.services.quran_corpus_service import (
     QuranCorpus,
     QuranCorpusError,
@@ -49,6 +61,13 @@ VIDEO_EXTENSIONS = {
 }
 
 ALLOWED_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
+
+
+quran_speech_recognizer = ArabicSpeechRecognizer(
+    model_name="OdyAsh/faster-whisper-base-ar-quran",
+    device="cpu",
+    compute_type="int8",
+)
 
 class EngineState:
     def __init__(self) -> None:
@@ -418,4 +437,126 @@ async def speech_model_status() -> dict[str, object]:
         "compute_type": speech_recognizer.compute_type,
         "loaded": speech_recognizer.is_loaded,
         "load_error": speech_recognizer.load_error,
+    }
+
+
+@app.post(
+    "/quran/align-audio",
+    dependencies=[Depends(verify_api_key)],
+)
+async def align_quran_audio(
+    file: UploadFile = File(...),
+) -> dict[str, object]:
+    filename = file.filename or "uploaded-media"
+    extension = Path(filename).suffix.lower()
+
+    if extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=(
+                "Unsupported media format. "
+                "Upload a supported audio or video file."
+            ),
+        )
+
+    corpus = getattr(
+        app.state,
+        "quran_corpus",
+        None,
+    )
+
+    if corpus is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The verified Quran corpus is unavailable.",
+        )
+
+    work_directory = (
+        Path(settings.temporary_directory)
+        / f"quran-alignment-{uuid4().hex}"
+    )
+
+    work_directory.mkdir(
+        parents=True,
+        exist_ok=False,
+    )
+
+    source_path = (
+        work_directory
+        / f"source{extension}"
+    )
+
+    prepared_path = (
+        work_directory
+        / "prepared.wav"
+    )
+
+    try:
+        with source_path.open("wb") as destination:
+            shutil.copyfileobj(
+                file.file,
+                destination,
+            )
+
+        if source_path.stat().st_size == 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="The uploaded media file is empty.",
+            )
+
+        await prepare_audio_for_alignment(
+            source_path,
+            prepared_path,
+        )
+
+        alignment_service = QuranAlignmentService(
+            corpus=corpus,
+            recognizer=quran_speech_recognizer,
+            max_sequence_length=6,
+            minimum_match_score=0.58,
+        )
+
+        result = await asyncio.to_thread(
+            alignment_service.align,
+            prepared_path,
+        )
+
+    except MediaPreparationError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
+
+    except QuranAlignmentError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
+
+    finally:
+        await file.close()
+
+        shutil.rmtree(
+            work_directory,
+            ignore_errors=True,
+        )
+
+    return {
+        "surah_number": result.surah_number,
+        "start_ayah": result.start_ayah,
+        "end_ayah": result.end_ayah,
+        "match_score": result.match_score,
+        "duration": result.duration,
+        "rough_transcript": result.transcript,
+        "verified_text": result.verified_text,
+        "ayahs": [
+            {
+                "surah_number": ayah.surah_number,
+                "ayah_number": ayah.ayah_number,
+                "start": ayah.start,
+                "end": ayah.end,
+                "text": ayah.text,
+            }
+            for ayah in result.ayahs
+        ],
     }

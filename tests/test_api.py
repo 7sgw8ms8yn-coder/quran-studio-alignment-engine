@@ -70,3 +70,19 @@ def test_health_reports_speech_model_unloaded() -> None:
         assert payload["corpus_loaded"] is True
         assert payload["model_loaded"] is False
         assert payload["status"] == "not_ready"
+
+
+def test_quran_audio_alignment_requires_authentication() -> None:
+    with TestClient(app) as test_client:
+        response = test_client.post(
+            "/quran/align-audio",
+            files={
+                "file": (
+                    "recitation.mp3",
+                    b"temporary-test-data",
+                    "audio/mpeg",
+                )
+            },
+        )
+
+        assert response.status_code == 401
