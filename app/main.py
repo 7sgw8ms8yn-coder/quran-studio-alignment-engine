@@ -768,3 +768,87 @@ async def get_quran_alignment_result(
         "result": None,
     }
 
+
+
+@app.post(
+    "/quran/align-audio-sync",
+    dependencies=[Depends(verify_api_key)],
+)
+async def align_quran_audio_sync(
+    file: Annotated[UploadFile, File(...)],
+) -> dict:
+    filename = Path(file.filename or "upload").name
+    extension = Path(filename).suffix.lower()
+
+    if extension not in ALLOWED_EXTENSIONS:
+        await file.close()
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Unsupported audio or video format.",
+        )
+
+    work_directory = Path(
+        tempfile.mkdtemp(prefix="quran-alignment-sync-")
+    )
+    source_path = work_directory / filename
+    prepared_path = work_directory / f"prepared-{Path(filename).stem}.wav"
+
+    try:
+        with source_path.open("wb") as destination:
+            shutil.copyfileobj(file.file, destination)
+
+        if source_path.stat().st_size == 0:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="The uploaded media file is empty.",
+            )
+
+        await prepare_audio_for_alignment(
+            source_path,
+            prepared_path,
+        )
+
+        alignment_service = QuranAlignmentService(
+            corpus=engine_state.quran_corpus,
+            recognizer=quran_speech_recognizer,
+            max_sequence_length=6,
+            minimum_match_score=0.58,
+        )
+
+        result = await asyncio.to_thread(
+            alignment_service.align,
+            prepared_path,
+        )
+
+        return {
+            "surah_number": result.surah_number,
+            "start_ayah": result.start_ayah,
+            "end_ayah": result.end_ayah,
+            "match_score": result.match_score,
+            "duration": result.duration,
+            "rough_transcript": result.transcript,
+            "verified_text": result.verified_text,
+            "ayahs": [
+                {
+                    "surah_number": ayah.surah_number,
+                    "ayah_number": ayah.ayah_number,
+                    "start": ayah.start,
+                    "end": ayah.end,
+                    "text": ayah.text,
+                }
+                for ayah in result.ayahs
+            ],
+        }
+
+    except QuranAlignmentError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(error),
+        ) from error
+
+    finally:
+        await file.close()
+        shutil.rmtree(
+            work_directory,
+            ignore_errors=True,
+        )
