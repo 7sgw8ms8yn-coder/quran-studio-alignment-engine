@@ -99,15 +99,40 @@ class QuranAlignmentService:
                 "The speech recognizer returned no Arabic text."
             )
 
+        raw_candidates = self.matcher.find_candidates(
+            transcript,
+            limit=2,
+        )
+
         candidate = self.matcher.best_match(
             transcript,
             minimum_score=self.minimum_match_score,
         )
 
         if candidate is None:
-            raise QuranAlignmentError(
-                "No sufficiently reliable Quran match was found."
-            )
+            diagnostic_parts = [
+                "No sufficiently reliable Quran match was found.",
+                f"Transcript: {transcript!r}",
+                f"Required score: {self.minimum_match_score:.3f}",
+            ]
+
+            for index, raw_candidate in enumerate(raw_candidates, start=1):
+                diagnostic_parts.append(
+                    f"Candidate {index}: "
+                    f"surah={raw_candidate.surah_number}, "
+                    f"ayahs={raw_candidate.start_ayah}-{raw_candidate.end_ayah}, "
+                    f"score={raw_candidate.score:.3f}, "
+                    f"fuzzy={raw_candidate.fuzzy_coverage:.3f}, "
+                    f"ngram={raw_candidate.ngram_similarity:.3f}"
+                )
+
+            if len(raw_candidates) > 1:
+                diagnostic_parts.append(
+                    "Score margin: "
+                    f"{raw_candidates[0].score - raw_candidates[1].score:.3f}"
+                )
+
+            raise QuranAlignmentError(" | ".join(diagnostic_parts))
 
         verified_ayahs = tuple(
             self.corpus.get_ayah(
