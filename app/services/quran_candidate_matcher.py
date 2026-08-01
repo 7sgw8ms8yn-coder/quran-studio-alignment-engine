@@ -241,13 +241,18 @@ class QuranCandidateMatcher:
                         | verified_word_set
                     )
 
+                    transcript_tokens = normalised_transcript.split()
+                    verified_tokens = normalised_verified.split()
+
                     sequence_similarity = (
                         SequenceMatcher(
                             None,
-                            normalised_transcript,
-                            normalised_verified,
+                            transcript_tokens,
+                            verified_tokens,
                             autojunk=False,
                         ).ratio()
+                        if transcript_tokens and verified_tokens
+                        else 0.0
                     )
 
                     word_overlap = (
