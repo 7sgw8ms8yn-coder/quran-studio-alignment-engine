@@ -153,6 +153,12 @@ class QuranCandidateMatcher:
         self.corpus = corpus
         self.max_sequence_length = max_sequence_length
 
+        # Local import avoids a circular import while the index reuses
+        # this module's Quran normalisation functions.
+        from app.services.quran_candidate_index import QuranCandidateIndex
+
+        self.candidate_index = QuranCandidateIndex(corpus)
+
     def find_candidates(
         self,
         transcript: str,
@@ -182,9 +188,41 @@ class QuranCandidateMatcher:
         safe_limit = max(1, min(limit, 25))
         matches: list[QuranCandidateMatch] = []
 
+        # Stage 1: retrieve likely ayahs in milliseconds.
+        # Keep the retrieval pool focused. Detailed fuzzy scoring is much
+        # more expensive than the index search, so only the strongest
+        # first-stage candidates should reach it.
+        shortlist = self.candidate_index.shortlist(
+            transcript,
+            limit=max(15, safe_limit * 3),
+        )
+
+        if not shortlist:
+            return ()
+
+        # Include surrounding ayahs so multi-ayah recitations remain possible.
+        shortlisted_references = set(
+            self.candidate_index.expand_passages(
+                shortlist,
+                before=1,
+                after=min(
+                    6,
+                    max(2, self.max_sequence_length),
+                ),
+            )
+        )
+
         by_surah: dict[int, list[object]] = {}
 
         for ayah in self.corpus.ayahs:
+            reference = (
+                ayah.surah_number,
+                ayah.ayah_number,
+            )
+
+            if reference not in shortlisted_references:
+                continue
+
             by_surah.setdefault(
                 ayah.surah_number,
                 [],
@@ -209,6 +247,17 @@ class QuranCandidateMatcher:
                         start_index:
                         start_index + sequence_length
                     ]
+
+                    # Do not combine ayahs separated by a shortlist gap.
+                    if any(
+                        current.ayah_number + 1
+                        != following.ayah_number
+                        for current, following in zip(
+                            sequence,
+                            sequence[1:],
+                        )
+                    ):
+                        continue
 
                     verified_text = " ".join(
                         ayah.text for ayah in sequence
@@ -281,15 +330,22 @@ class QuranCandidateMatcher:
                         ),
                     )
 
+                    phonetic_verified = phonetic_normalise(normalised_verified)
+
+                    phonetic_transcript_tokens = set(phonetic_transcript.split())
+                    phonetic_verified_tokens = set(phonetic_verified.split())
+
+                    phonetic_total = (
+                        len(phonetic_transcript_tokens)
+                        + len(phonetic_verified_tokens)
+                    )
+
                     phonetic_similarity = (
-                        SequenceMatcher(
-                            None,
-                            phonetic_transcript,
-                            phonetic_normalise(
-                                normalised_verified
-                            ),
-                            autojunk=False,
-                        ).ratio()
+                        2.0
+                        * len(phonetic_transcript_tokens & phonetic_verified_tokens)
+                        / phonetic_total
+                        if phonetic_total
+                        else 0.0
                     )
 
                     shorter_length = min(
