@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from app.services.quran_candidate_matcher import QuranCandidateMatcher
 from app.services.quran_corpus_service import QuranCorpus
@@ -24,6 +24,17 @@ class SpeechRecognizerProtocol(Protocol):
         ...
 
 
+class QuranVerseProviderProtocol(Protocol):
+    def get_verse(
+        self,
+        surah_number: int,
+        ayah_number: int,
+        *,
+        include_words: bool = True,
+    ) -> Any:
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class AlignedAyah:
     surah_number: int
@@ -31,6 +42,9 @@ class AlignedAyah:
     text: str
     start: float
     end: float
+    text_imlaei: str | None = None
+    words: tuple[dict[str, Any], ...] = ()
+    verification_source: str = "local_corpus"
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,6 +79,7 @@ class QuranAlignmentService:
         recognizer: SpeechRecognizerProtocol,
         max_sequence_length: int = 4,
         minimum_match_score: float = 0.58,
+        verse_provider: QuranVerseProviderProtocol | None = None,
     ) -> None:
         if not 0.0 <= minimum_match_score <= 1.0:
             raise ValueError(
@@ -74,6 +89,7 @@ class QuranAlignmentService:
         self.corpus = corpus
         self.recognizer = recognizer
         self.minimum_match_score = minimum_match_score
+        self.verse_provider = verse_provider
         self.matcher = QuranCandidateMatcher(
             corpus=corpus,
             max_sequence_length=max_sequence_length,
@@ -134,7 +150,7 @@ class QuranAlignmentService:
 
             raise QuranAlignmentError(" | ".join(diagnostic_parts))
 
-        verified_ayahs = tuple(
+        local_ayahs = tuple(
             self.corpus.get_ayah(
                 candidate.surah_number,
                 ayah_number,
@@ -145,30 +161,94 @@ class QuranAlignmentService:
             )
         )
 
+        verified_entries: list[
+            tuple[
+                Any,
+                str,
+                str | None,
+                tuple[dict[str, Any], ...],
+                str,
+            ]
+        ] = []
+
+        for local_ayah in local_ayahs:
+            if self.verse_provider is None:
+                verified_entries.append(
+                    (
+                        local_ayah,
+                        local_ayah.text,
+                        None,
+                        (),
+                        "local_corpus",
+                    )
+                )
+                continue
+
+            try:
+                remote_verse = self.verse_provider.get_verse(
+                    local_ayah.surah_number,
+                    local_ayah.ayah_number,
+                    include_words=True,
+                )
+            except Exception as error:
+                raise QuranAlignmentError(
+                    "The detected Quran passage could not be "
+                    "verified with Quran Foundation."
+                ) from error
+
+            verified_text = (
+                remote_verse.text_uthmani
+                or remote_verse.text_imlaei
+            )
+
+            if not verified_text:
+                raise QuranAlignmentError(
+                    "Quran Foundation returned no verified Arabic "
+                    f"for {local_ayah.surah_number}:"
+                    f"{local_ayah.ayah_number}."
+                )
+
+            verified_entries.append(
+                (
+                    local_ayah,
+                    verified_text,
+                    remote_verse.text_imlaei,
+                    tuple(remote_verse.words),
+                    "quran_foundation",
+                )
+            )
+
         duration = max(
             0.0,
             float(transcription.duration),
         )
 
         word_counts = [
-            max(1, len(ayah.text.split()))
-            for ayah in verified_ayahs
+            max(1, len(text.split()))
+            for _, text, _, _, _ in verified_entries
         ]
 
         total_words = sum(word_counts)
         aligned_ayahs: list[AlignedAyah] = []
         elapsed = 0.0
 
-        for index, (ayah, word_count) in enumerate(
+        for index, (entry, word_count) in enumerate(
             zip(
-                verified_ayahs,
+                verified_entries,
                 word_counts,
                 strict=True,
             )
         ):
+            (
+                ayah,
+                verified_text,
+                text_imlaei,
+                words,
+                verification_source,
+            ) = entry
             start = elapsed
 
-            if index == len(verified_ayahs) - 1:
+            if index == len(verified_entries) - 1:
                 end = duration
             else:
                 share = word_count / total_words
@@ -178,9 +258,12 @@ class QuranAlignmentService:
                 AlignedAyah(
                     surah_number=ayah.surah_number,
                     ayah_number=ayah.ayah_number,
-                    text=ayah.text,
+                    text=verified_text,
                     start=round(start, 3),
                     end=round(end, 3),
+                    text_imlaei=text_imlaei,
+                    words=words,
+                    verification_source=verification_source,
                 )
             )
 
