@@ -40,6 +40,9 @@ class QuranWordAlignmentService:
         self,
         *,
         minimum_similarity: float = 0.58,
+        minimum_confidence: float = 0.60,
+        minimum_duration: float = 0.08,
+        timestamp_tolerance: float = 0.03,
         skip_verified_penalty: float = 0.30,
         skip_recognised_penalty: float = 0.45,
     ) -> None:
@@ -48,7 +51,25 @@ class QuranWordAlignmentService:
                 "minimum_similarity must be between 0 and 1."
             )
 
+        if not 0.0 <= minimum_confidence <= 1.0:
+            raise ValueError(
+                "minimum_confidence must be between 0 and 1."
+            )
+
+        if minimum_duration < 0.0:
+            raise ValueError(
+                "minimum_duration cannot be negative."
+            )
+
+        if timestamp_tolerance < 0.0:
+            raise ValueError(
+                "timestamp_tolerance cannot be negative."
+            )
+
         self.minimum_similarity = minimum_similarity
+        self.minimum_confidence = minimum_confidence
+        self.minimum_duration = minimum_duration
+        self.timestamp_tolerance = timestamp_tolerance
         self.skip_verified_penalty = skip_verified_penalty
         self.skip_recognised_penalty = skip_recognised_penalty
 
@@ -220,16 +241,31 @@ class QuranWordAlignmentService:
                         ),
                     )
 
-                    aligned_reversed.append(
-                        TimedVerifiedWord(
-                            verified_index=verified_index,
-                            text=verified_word,
-                            start=round(recognised_word.start, 3),
-                            end=round(recognised_word.end, 3),
-                            confidence=round(confidence, 6),
-                            recognised_text=recognised_word.text,
-                        )
+                    start = float(recognised_word.start)
+                    end = float(recognised_word.end)
+                    duration = end - start
+
+                    timestamp_is_valid = (
+                        start >= 0.0
+                        and end > start
+                        and duration >= self.minimum_duration
                     )
+
+                    quality_is_valid = (
+                        confidence >= self.minimum_confidence
+                    )
+
+                    if timestamp_is_valid and quality_is_valid:
+                        aligned_reversed.append(
+                            TimedVerifiedWord(
+                                verified_index=verified_index,
+                                text=verified_word,
+                                start=round(start, 3),
+                                end=round(end, 3),
+                                confidence=round(confidence, 6),
+                                recognised_text=recognised_word.text,
+                            )
+                        )
 
                 recognised_index -= 1
                 verified_index -= 1
@@ -240,7 +276,25 @@ class QuranWordAlignmentService:
             else:
                 break
 
-        aligned_words = tuple(reversed(aligned_reversed))
+        ordered_words = tuple(reversed(aligned_reversed))
+
+        # Reject timestamps that move backwards or substantially overlap.
+        # Small model rounding differences are tolerated.
+        validated_words: list[TimedVerifiedWord] = []
+        previous_end = 0.0
+
+        for word in ordered_words:
+            if (
+                validated_words
+                and word.start
+                < previous_end - self.timestamp_tolerance
+            ):
+                continue
+
+            validated_words.append(word)
+            previous_end = max(previous_end, word.end)
+
+        aligned_words = tuple(validated_words)
         matched_count = len(aligned_words)
 
         average_confidence = (

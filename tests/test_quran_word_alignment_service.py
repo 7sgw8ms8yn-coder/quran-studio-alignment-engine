@@ -66,3 +66,58 @@ def test_empty_recognition_returns_empty_result() -> None:
 
     assert result.matched_word_count == 0
     assert result.words == ()
+
+
+def test_rejects_low_confidence_short_timestamp() -> None:
+    service = QuranWordAlignmentService(
+        minimum_confidence=0.60,
+        minimum_duration=0.08,
+    )
+
+    recognised = (
+        TranscriptWord(
+            text="وما",
+            start=22.46,
+            end=22.50,
+            probability=0.60,
+        ),
+    )
+
+    result = service.align(
+        recognised,
+        "وَمَا",
+    )
+
+    assert result.matched_word_count == 0
+    assert result.words == ()
+
+
+def test_rejects_timestamp_that_moves_backwards() -> None:
+    service = QuranWordAlignmentService(
+        minimum_confidence=0.50,
+        minimum_duration=0.05,
+        timestamp_tolerance=0.01,
+    )
+
+    recognised = (
+        TranscriptWord(
+            text="واتبعوا",
+            start=1.0,
+            end=2.0,
+            probability=1.0,
+        ),
+        TranscriptWord(
+            text="ما",
+            start=0.5,
+            end=1.2,
+            probability=1.0,
+        ),
+    )
+
+    result = service.align(
+        recognised,
+        "وَاتَّبَعُوا مَا",
+    )
+
+    assert result.matched_word_count == 1
+    assert result.words[0].text == "وَاتَّبَعُوا"
