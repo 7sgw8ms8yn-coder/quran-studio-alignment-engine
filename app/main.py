@@ -557,6 +557,41 @@ async def _execute_quran_alignment(
             }
             for ayah in result.ayahs
         ],
+        "word_alignment": (
+            None
+            if result.word_alignment is None
+            else {
+                "verified_word_count": (
+                    result.word_alignment.verified_word_count
+                ),
+                "recognised_word_count": (
+                    result.word_alignment.recognised_word_count
+                ),
+                "matched_word_count": (
+                    result.word_alignment.matched_word_count
+                ),
+                "recognised_coverage": (
+                    result.word_alignment.recognised_coverage
+                ),
+                "verified_coverage": (
+                    result.word_alignment.verified_coverage
+                ),
+                "average_confidence": (
+                    result.word_alignment.average_confidence
+                ),
+                "words": [
+                    {
+                        "verified_index": word.verified_index,
+                        "text": word.text,
+                        "start": word.start,
+                        "end": word.end,
+                        "confidence": word.confidence,
+                        "recognised_text": word.recognised_text,
+                    }
+                    for word in result.word_alignment.words
+                ],
+            }
+        ),
     }
 
 # --- ASYNC QURAN ALIGNMENT JOB FLOW ---
