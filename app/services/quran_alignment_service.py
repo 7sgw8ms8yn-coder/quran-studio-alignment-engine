@@ -6,6 +6,10 @@ from typing import Any, Protocol
 
 from app.services.quran_candidate_matcher import QuranCandidateMatcher
 from app.services.quran_corpus_service import QuranCorpus
+from app.services.quran_word_alignment_service import (
+    QuranWordAlignmentResult,
+    QuranWordAlignmentService,
+)
 from app.services.speech_recognition_service import (
     SpeechRecognitionError,
     TranscriptionResult,
@@ -56,6 +60,7 @@ class QuranAlignmentResult:
     match_score: float
     duration: float
     ayahs: tuple[AlignedAyah, ...]
+    word_alignment: QuranWordAlignmentResult | None = None
 
     @property
     def verified_text(self) -> str:
@@ -80,6 +85,7 @@ class QuranAlignmentService:
         max_sequence_length: int = 4,
         minimum_match_score: float = 0.58,
         verse_provider: QuranVerseProviderProtocol | None = None,
+        word_aligner: QuranWordAlignmentService | None = None,
     ) -> None:
         if not 0.0 <= minimum_match_score <= 1.0:
             raise ValueError(
@@ -90,6 +96,11 @@ class QuranAlignmentService:
         self.recognizer = recognizer
         self.minimum_match_score = minimum_match_score
         self.verse_provider = verse_provider
+        self.word_aligner = (
+            word_aligner
+            if word_aligner is not None
+            else QuranWordAlignmentService()
+        )
         self.matcher = QuranCandidateMatcher(
             corpus=corpus,
             max_sequence_length=max_sequence_length,
@@ -223,6 +234,35 @@ class QuranAlignmentService:
             float(transcription.duration),
         )
 
+        recognised_words = tuple(
+            word
+            for segment in transcription.segments
+            for word in segment.words
+        )
+
+        word_alignment: QuranWordAlignmentResult | None = None
+
+        verified_word_text = " ".join(
+            (
+                text_imlaei
+                if text_imlaei
+                else verified_text
+            )
+            for (
+                _,
+                verified_text,
+                text_imlaei,
+                _,
+                _,
+            ) in verified_entries
+        ).strip()
+
+        if recognised_words and verified_word_text:
+            word_alignment = self.word_aligner.align(
+                recognised_words,
+                verified_word_text,
+            )
+
         word_counts = [
             max(1, len(text.split()))
             for _, text, _, _, _ in verified_entries
@@ -277,4 +317,5 @@ class QuranAlignmentService:
             match_score=candidate.score,
             duration=duration,
             ayahs=tuple(aligned_ayahs),
+            word_alignment=word_alignment,
         )

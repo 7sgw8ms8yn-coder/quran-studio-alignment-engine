@@ -10,6 +10,7 @@ from app.services.quran_corpus_service import load_quran_corpus
 from app.services.speech_recognition_service import (
     SpeechRecognitionError,
     TranscriptSegment,
+    TranscriptWord,
     TranscriptionResult,
 )
 
@@ -176,3 +177,58 @@ def test_recognition_failure_is_wrapped() -> None:
         service.align(
             Path("unused-test-audio.mp3")
         )
+
+
+def test_alignment_includes_verified_word_timings() -> None:
+    corpus = load_quran_corpus()
+
+    transcription = TranscriptionResult(
+        language="ar",
+        language_probability=1.0,
+        duration=2.0,
+        segments=(
+            TranscriptSegment(
+                text="الحمد لله",
+                start=0.0,
+                end=2.0,
+                words=(
+                    TranscriptWord(
+                        text="الحمد",
+                        start=0.0,
+                        end=1.2,
+                        probability=0.99,
+                    ),
+                    TranscriptWord(
+                        text="لله",
+                        start=1.2,
+                        end=2.0,
+                        probability=0.98,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    service = QuranAlignmentService(
+        corpus=corpus,
+        recognizer=FakeRecognizer(transcription),
+    )
+
+    result = service.align(
+        Path("unused-test-audio.mp3")
+    )
+
+    assert result.word_alignment is not None
+    assert result.word_alignment.matched_word_count == 2
+    assert result.word_alignment.recognised_coverage == 1.0
+
+    first, second = result.word_alignment.words
+
+    assert first.text == "الحمد"
+    assert first.start == 0.0
+    assert first.end == 1.2
+
+    assert second.text == "لله"
+    assert second.start == 1.2
+    assert second.end == 2.0
+
