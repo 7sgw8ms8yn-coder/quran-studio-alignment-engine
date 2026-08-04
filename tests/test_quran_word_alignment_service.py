@@ -1,0 +1,68 @@
+from app.services.quran_word_alignment_service import (
+    QuranWordAlignmentService,
+)
+from app.services.speech_recognition_service import TranscriptWord
+
+
+def test_extracts_words_and_removes_pause_symbols() -> None:
+    service = QuranWordAlignmentService()
+
+    words = service.extract_spoken_words(
+        "وَاتَّبَعُوا مَا ۖ تَتْلُو ۚ"
+    )
+
+    assert words == (
+        "وَاتَّبَعُوا",
+        "مَا",
+        "تَتْلُو",
+    )
+
+
+def test_aligns_partial_recitation_to_verified_words() -> None:
+    service = QuranWordAlignmentService()
+
+    recognised = (
+        TranscriptWord(
+            text="واتبعوا",
+            start=0.0,
+            end=1.5,
+            probability=0.95,
+        ),
+        TranscriptWord(
+            text="ما",
+            start=1.5,
+            end=1.9,
+            probability=0.98,
+        ),
+        TranscriptWord(
+            text="تتلو",
+            start=1.9,
+            end=2.4,
+            probability=0.96,
+        ),
+    )
+
+    result = service.align(
+        recognised,
+        "وَاتَّبَعُوا مَا تَتْلُو الشَّيَاطِينُ",
+    )
+
+    assert result.matched_word_count == 3
+    assert result.recognised_coverage == 1.0
+    assert result.verified_coverage == 0.75
+
+    assert result.words[0].verified_index == 1
+    assert result.words[0].start == 0.0
+    assert result.words[0].end == 1.5
+
+
+def test_empty_recognition_returns_empty_result() -> None:
+    service = QuranWordAlignmentService()
+
+    result = service.align(
+        (),
+        "وَاتَّبَعُوا مَا",
+    )
+
+    assert result.matched_word_count == 0
+    assert result.words == ()
