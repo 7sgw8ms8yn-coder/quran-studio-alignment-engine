@@ -66,7 +66,7 @@ ALLOWED_EXTENSIONS = AUDIO_EXTENSIONS | VIDEO_EXTENSIONS
 
 
 quran_speech_recognizer = ArabicSpeechRecognizer(
-    model_name="tiny",
+    model_name="OdyAsh/faster-whisper-base-ar-quran",
     device="cpu",
     compute_type="int8",
 )
