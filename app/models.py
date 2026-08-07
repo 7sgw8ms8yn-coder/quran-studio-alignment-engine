@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 JobStatus = Literal[
     "queued",
     "engine_not_ready",
+    "processing",
     "extracting_audio",
     "transcribing",
     "searching_quran",
