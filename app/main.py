@@ -582,6 +582,9 @@ async def _execute_quran_alignment(
                 "words": [
                     {
                         "verified_index": word.verified_index,
+                        "surah_number": word.surah_number,
+                        "ayah_number": word.ayah_number,
+                        "word_index_in_ayah": word.word_index_in_ayah,
                         "text": word.text,
                         "start": word.start,
                         "end": word.end,

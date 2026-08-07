@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -262,6 +262,72 @@ class QuranAlignmentService:
                 recognised_words,
                 verified_word_text,
             )
+
+            if word_alignment is not None:
+                verified_word_locations: list[
+                    tuple[int, int, int]
+                ] = []
+
+                for (
+                    ayah,
+                    verified_text,
+                    text_imlaei,
+                    _,
+                    _,
+                ) in verified_entries:
+                    source_text = (
+                        text_imlaei
+                        if text_imlaei
+                        else verified_text
+                    )
+
+                    spoken_words = (
+                        self.word_aligner.extract_spoken_words(
+                            source_text
+                        )
+                    )
+
+                    verified_word_locations.extend(
+                        (
+                            ayah.surah_number,
+                            ayah.ayah_number,
+                            word_index,
+                        )
+                        for word_index, _ in enumerate(
+                            spoken_words,
+                            start=1,
+                        )
+                    )
+
+                enriched_words = []
+
+                for word in word_alignment.words:
+                    if (
+                        0
+                        <= word.verified_index
+                        < len(verified_word_locations)
+                    ):
+                        (
+                            word_surah,
+                            word_ayah,
+                            word_index_in_ayah,
+                        ) = verified_word_locations[
+                            word.verified_index
+                        ]
+
+                        word = replace(
+                            word,
+                            surah_number=word_surah,
+                            ayah_number=word_ayah,
+                            word_index_in_ayah=word_index_in_ayah,
+                        )
+
+                    enriched_words.append(word)
+
+                word_alignment = replace(
+                    word_alignment,
+                    words=tuple(enriched_words),
+                )
 
         word_counts = [
             max(1, len(text.split()))

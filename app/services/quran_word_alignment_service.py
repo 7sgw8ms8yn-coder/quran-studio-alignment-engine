@@ -22,6 +22,9 @@ class TimedVerifiedWord:
     end: float
     confidence: float
     recognised_text: str
+    surah_number: int | None = None
+    ayah_number: int | None = None
+    word_index_in_ayah: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
