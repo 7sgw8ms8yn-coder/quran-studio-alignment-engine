@@ -18,7 +18,7 @@ httpx==0.28.1
 huggingface_hub==1.26.0
 idna==3.18
 iniconfig==2.3.0
-numpy==2.5.1
+numpy==2.2.6
 onnxruntime==1.28.0
 packaging==26.2
 pluggy==1.6.0
