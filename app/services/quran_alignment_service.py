@@ -303,17 +303,17 @@ class QuranAlignmentService:
 
                 for word in word_alignment.words:
                     if (
-                        0
-                        <= word.verified_index
-                        < len(verified_word_locations)
+                        1
+                            <= word.verified_index
+                            <= len(verified_word_locations)
                     ):
                         (
                             word_surah,
                             word_ayah,
                             word_index_in_ayah,
                         ) = verified_word_locations[
-                            word.verified_index
-                        ]
+                                word.verified_index - 1
+                            ]
 
                         word = replace(
                             word,
