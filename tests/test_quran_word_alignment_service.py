@@ -121,3 +121,80 @@ def test_rejects_timestamp_that_moves_backwards() -> None:
 
     assert result.matched_word_count == 1
     assert result.words[0].text == "وَاتَّبَعُوا"
+
+
+
+def test_recovers_single_final_quran_word_from_fragmented_whisper_tail() -> None:
+    service = QuranWordAlignmentService()
+
+    recognised = (
+        TranscriptWord(
+            text="عَلَيْهِ",
+            start=0.0,
+            end=1.0,
+            probability=0.99,
+        ),
+        TranscriptWord(
+            text="صَادًا",
+            start=1.0,
+            end=1.14,
+            probability=0.6128154590725898,
+        ),
+        TranscriptWord(
+            text="مَصَدًا",
+            start=1.14,
+            end=2.18,
+            probability=0.414850511030973,
+        ),
+        TranscriptWord(
+            text="مَصَدًا",
+            start=2.18,
+            end=2.66,
+            probability=0.3122150605415186,
+        ),
+    )
+
+    result = service.align(
+        recognised,
+        "عَلَيْهِ صَبْرًا",
+    )
+
+    assert result.matched_word_count == 2
+
+    final_word = result.words[-1]
+
+    assert final_word.verified_index == 2
+    assert final_word.text == "صَبْرًا"
+    assert final_word.start == 1.0
+    assert final_word.end == 2.66
+
+    # Recovery deliberately preserves the weak ASR confidence
+    # instead of pretending this was a normal high-confidence match.
+    assert final_word.confidence < 0.60
+
+
+def test_does_not_recover_when_multiple_verified_words_remain() -> None:
+    service = QuranWordAlignmentService()
+
+    recognised = (
+        TranscriptWord(
+            text="عَلَيْهِ",
+            start=0.0,
+            end=1.0,
+            probability=0.99,
+        ),
+        TranscriptWord(
+            text="صَادًا",
+            start=1.0,
+            end=1.2,
+            probability=0.62,
+        ),
+    )
+
+    result = service.align(
+        recognised,
+        "عَلَيْهِ كَلِمَة صَبْرًا",
+    )
+
+    assert result.matched_word_count == 1
+    assert result.words[-1].text == "عَلَيْهِ"

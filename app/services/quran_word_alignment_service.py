@@ -297,6 +297,130 @@ class QuranWordAlignmentService:
             validated_words.append(word)
             previous_end = max(previous_end, word.end)
 
+        # Narrow recovery for one missing FINAL Quran word.
+        #
+        # Whisper can occasionally fragment or slightly misrecognise the
+        # final recited word. We must NOT lower the global alignment
+        # thresholds because that would weaken Quran matching everywhere.
+        #
+        # Recovery is allowed only when:
+        #   1. We already have a valid aligned sequence.
+        #   2. Exactly ONE verified Quran word remains.
+        #   3. Whisper produced immediate trailing speech.
+        #   4. That speech has moderate textual evidence for the final word.
+        #
+        # The recovered word keeps a LOW confidence value so downstream
+        # consumers can still distinguish recovery from a normal match.
+
+        if validated_words:
+            last_aligned = validated_words[-1]
+
+            remaining_verified_words = (
+                verified_count - last_aligned.verified_index
+            )
+
+            if remaining_verified_words == 1:
+                final_verified_word = verified_words[-1]
+
+                trailing_recognised = tuple(
+                    word
+                    for word in recognised
+                    if (
+                        word.text.strip()
+                        and float(word.end) > last_aligned.end
+                        and float(word.start)
+                        >= (
+                            last_aligned.end
+                            - self.timestamp_tolerance
+                        )
+                        and float(word.start)
+                        <= last_aligned.end + 3.0
+                        and (
+                            float(word.end)
+                            - float(word.start)
+                        )
+                        >= self.minimum_duration
+                    )
+                )
+
+                if trailing_recognised:
+                    trailing_evidence = tuple(
+                        (
+                            word,
+                            self._similarity(
+                                word.text,
+                                final_verified_word,
+                            ),
+                        )
+                        for word in trailing_recognised
+                    )
+
+                    best_similarity = max(
+                        similarity
+                        for _, similarity in trailing_evidence
+                    )
+
+                    best_combined_confidence = max(
+                        similarity
+                        * max(
+                            0.0,
+                            min(
+                                1.0,
+                                float(word.probability),
+                            ),
+                        )
+                        for word, similarity in trailing_evidence
+                    )
+
+                    first_tail_start = min(
+                        float(word.start)
+                        for word in trailing_recognised
+                    )
+
+                    tail_is_immediate = (
+                        first_tail_start
+                        <= last_aligned.end + 0.75
+                    )
+
+                    if (
+                        tail_is_immediate
+                        and best_similarity >= 0.45
+                        and best_combined_confidence >= 0.25
+                    ):
+                        recovery_start = max(
+                            last_aligned.end,
+                            first_tail_start,
+                        )
+
+                        recovery_end = max(
+                            float(word.end)
+                            for word in trailing_recognised
+                        )
+
+                        validated_words.append(
+                            TimedVerifiedWord(
+                                verified_index=verified_count,
+                                text=final_verified_word,
+                                start=round(
+                                    recovery_start,
+                                    3,
+                                ),
+                                end=round(
+                                    recovery_end,
+                                    3,
+                                ),
+                                confidence=round(
+                                    best_combined_confidence,
+                                    6,
+                                ),
+                                recognised_text=" ".join(
+                                    word.text.strip()
+                                    for word
+                                    in trailing_recognised
+                                ),
+                            )
+                        )
+
         aligned_words = tuple(validated_words)
         matched_count = len(aligned_words)
 
