@@ -198,3 +198,119 @@ def test_does_not_recover_when_multiple_verified_words_remain() -> None:
 
     assert result.matched_word_count == 1
     assert result.words[-1].text == "عَلَيْهِ"
+
+
+
+def test_preserves_high_confidence_repeated_quran_phrase() -> None:
+    service = QuranWordAlignmentService()
+
+    recognised = (
+        TranscriptWord(
+            text="لَهُمَا",
+            start=0.0,
+            end=1.0,
+            probability=0.99,
+        ),
+
+        # First recitation.
+        TranscriptWord(
+            text="وَكَانَ",
+            start=1.0,
+            end=2.0,
+            probability=0.999,
+        ),
+        TranscriptWord(
+            text="أَبُوهُمَا",
+            start=2.0,
+            end=3.0,
+            probability=0.999,
+        ),
+        TranscriptWord(
+            text="صَالِحًا",
+            start=3.0,
+            end=4.0,
+            probability=0.999,
+        ),
+
+        # Same Quran phrase repeated by the reciter.
+        TranscriptWord(
+            text="وَكَانَ",
+            start=4.0,
+            end=5.0,
+            probability=0.999,
+        ),
+        TranscriptWord(
+            text="أَبُوهُمَا",
+            start=5.0,
+            end=6.0,
+            probability=0.999,
+        ),
+        TranscriptWord(
+            text="صَالِحًا",
+            start=6.0,
+            end=7.0,
+            probability=0.999,
+        ),
+
+        TranscriptWord(
+            text="فَأَرَادَ",
+            start=7.0,
+            end=8.0,
+            probability=0.999,
+        ),
+    )
+
+    result = service.align(
+        recognised,
+        "لَهُمَا وَكَانَ أَبُوهُمَا صَالِحًا فَأَرَادَ",
+    )
+
+    repeated_wa_kana = [
+        word
+        for word in result.words
+        if word.text == "وَكَانَ"
+    ]
+    repeated_father = [
+        word
+        for word in result.words
+        if word.text == "أَبُوهُمَا"
+    ]
+    repeated_saliha = [
+        word
+        for word in result.words
+        if word.text == "صَالِحًا"
+    ]
+
+    assert len(repeated_wa_kana) == 2
+    assert len(repeated_father) == 2
+    assert len(repeated_saliha) == 2
+
+    assert [word.start for word in repeated_wa_kana] == [
+        1.0,
+        4.0,
+    ]
+    assert [word.start for word in repeated_father] == [
+        2.0,
+        5.0,
+    ]
+    assert [word.start for word in repeated_saliha] == [
+        3.0,
+        6.0,
+    ]
+
+    # Both performances deliberately point to the SAME Quran positions.
+    assert {
+        word.verified_index
+        for word in repeated_wa_kana
+    } == {2}
+
+    assert {
+        word.verified_index
+        for word in repeated_father
+    } == {3}
+
+    assert {
+        word.verified_index
+        for word in repeated_saliha
+    } == {4}
+

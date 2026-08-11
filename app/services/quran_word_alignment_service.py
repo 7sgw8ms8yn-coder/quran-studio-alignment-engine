@@ -297,6 +297,326 @@ class QuranWordAlignmentService:
             validated_words.append(word)
             previous_end = max(previous_end, word.end)
 
+        # Recover high-confidence repeated Quran phrases.
+        #
+        # The primary DP alignment is monotonic, so when a reciter repeats
+        # a Quran phrase it can create a hybrid alignment: some words may
+        # come from the first performance and others from the second.
+        #
+        # Therefore we do NOT inspect only unmatched runs here. Instead,
+        # scan the complete recognised timeline for the same contiguous
+        # verified Quran phrase occurring at least twice.
+        #
+        # Existing DP-aligned words act as anchors. Any candidate phrase
+        # that conflicts with an already-aligned verified index is rejected.
+        # Only missing timestamped words are added.
+
+        if validated_words and len(recognised) >= 4 and verified_count >= 2:
+            recognised_list = list(recognised)
+
+            matched_timestamp_keys = {
+                (
+                    round(float(word.start), 3),
+                    round(float(word.end), 3),
+                )
+                for word in validated_words
+            }
+
+            aligned_index_by_timestamp = {
+                (
+                    round(float(word.start), 3),
+                    round(float(word.end), 3),
+                ): word.verified_index
+                for word in validated_words
+            }
+
+            recovered_repetition_words: list[TimedVerifiedWord] = []
+
+            max_phrase_length = min(
+                8,
+                verified_count,
+                len(recognised_list) // 2,
+            )
+
+            repetition_candidates = []
+
+            for phrase_length in range(max_phrase_length, 1, -1):
+                for verified_start_zero in range(
+                    0,
+                    verified_count - phrase_length + 1,
+                ):
+                    verified_start = verified_start_zero + 1
+
+                    occurrences = []
+
+                    for recognised_start in range(
+                        0,
+                        len(recognised_list) - phrase_length + 1,
+                    ):
+                        window = recognised_list[
+                            recognised_start:
+                            recognised_start + phrase_length
+                        ]
+
+                        timestamps_valid = all(
+                            float(word.start) >= 0.0
+                            and float(word.end) > float(word.start)
+                            and (
+                                float(word.end) - float(word.start)
+                                >= self.minimum_duration
+                            )
+                            for word in window
+                        )
+
+                        if not timestamps_valid:
+                            continue
+
+                        timestamps_monotonic = all(
+                            float(window[index].start)
+                            >= (
+                                float(window[index - 1].end)
+                                - self.timestamp_tolerance
+                            )
+                            for index in range(1, len(window))
+                        )
+
+                        if not timestamps_monotonic:
+                            continue
+
+                        similarities = []
+                        combined_confidences = []
+                        anchor_count = 0
+                        anchor_conflict = False
+
+                        for offset, recognised_word in enumerate(window):
+                            verified_index_for_word = (
+                                verified_start + offset
+                            )
+
+                            verified_word = verified_words[
+                                verified_index_for_word - 1
+                            ]
+
+                            similarity = self._similarity(
+                                recognised_word.text,
+                                verified_word,
+                            )
+
+                            probability = max(
+                                0.0,
+                                min(
+                                    1.0,
+                                    float(recognised_word.probability),
+                                ),
+                            )
+
+                            similarities.append(similarity)
+                            combined_confidences.append(
+                                similarity * probability
+                            )
+
+                            timestamp_key = (
+                                round(float(recognised_word.start), 3),
+                                round(float(recognised_word.end), 3),
+                            )
+
+                            existing_verified_index = (
+                                aligned_index_by_timestamp.get(
+                                    timestamp_key
+                                )
+                            )
+
+                            if existing_verified_index is not None:
+                                if (
+                                    existing_verified_index
+                                    != verified_index_for_word
+                                ):
+                                    anchor_conflict = True
+                                    break
+
+                                anchor_count += 1
+
+                        if anchor_conflict:
+                            continue
+
+                        minimum_similarity = min(similarities)
+                        average_similarity = (
+                            sum(similarities) / len(similarities)
+                        )
+                        average_combined_confidence = (
+                            sum(combined_confidences)
+                            / len(combined_confidences)
+                        )
+
+                        if minimum_similarity < max(
+                            self.minimum_similarity,
+                            0.88,
+                        ):
+                            continue
+
+                        if average_similarity < 0.93:
+                            continue
+
+                        if average_combined_confidence < 0.80:
+                            continue
+
+                        occurrences.append(
+                            (
+                                recognised_start,
+                                window,
+                                similarities,
+                                combined_confidences,
+                                anchor_count,
+                            )
+                        )
+
+                    # Keep only non-overlapping performances of the phrase.
+                    non_overlapping_occurrences = []
+
+                    for occurrence in occurrences:
+                        recognised_start = occurrence[0]
+
+                        if (
+                            not non_overlapping_occurrences
+                            or recognised_start
+                            >= (
+                                non_overlapping_occurrences[-1][0]
+                                + phrase_length
+                            )
+                        ):
+                            non_overlapping_occurrences.append(
+                                occurrence
+                            )
+
+                    if len(non_overlapping_occurrences) < 2:
+                        continue
+
+                    total_anchor_count = sum(
+                        occurrence[4]
+                        for occurrence in non_overlapping_occurrences
+                    )
+
+                    # At least one existing DP word must confirm the Quran
+                    # location. This prevents free-floating phrase guesses.
+                    if total_anchor_count < 1:
+                        continue
+
+                    candidate_score = (
+                        phrase_length * 10.0
+                        + total_anchor_count
+                        + sum(
+                            sum(occurrence[2])
+                            / len(occurrence[2])
+                            for occurrence
+                            in non_overlapping_occurrences
+                        )
+                    )
+
+                    repetition_candidates.append(
+                        (
+                            candidate_score,
+                            phrase_length,
+                            verified_start,
+                            non_overlapping_occurrences,
+                        )
+                    )
+
+            # Prefer the longest / strongest repeated phrase first so that
+            # shorter overlapping subphrases do not create duplicate words.
+            repetition_candidates.sort(
+                key=lambda item: item[0],
+                reverse=True,
+            )
+
+            claimed_recognised_positions: set[int] = set()
+
+            for (
+                _,
+                phrase_length,
+                verified_start,
+                occurrences,
+            ) in repetition_candidates:
+                candidate_positions = {
+                    recognised_start + offset
+                    for (
+                        recognised_start,
+                        _,
+                        _,
+                        _,
+                        _,
+                    ) in occurrences
+                    for offset in range(phrase_length)
+                }
+
+                if (
+                    candidate_positions
+                    & claimed_recognised_positions
+                ):
+                    continue
+
+                for (
+                    recognised_start,
+                    window,
+                    _similarities,
+                    combined_confidences,
+                    _anchor_count,
+                ) in occurrences:
+                    for offset, recognised_word in enumerate(window):
+                        verified_index_for_word = (
+                            verified_start + offset
+                        )
+
+                        timestamp_key = (
+                            round(float(recognised_word.start), 3),
+                            round(float(recognised_word.end), 3),
+                        )
+
+                        # Already preserved correctly by the primary DP.
+                        if timestamp_key in matched_timestamp_keys:
+                            continue
+
+                        verified_word = verified_words[
+                            verified_index_for_word - 1
+                        ]
+
+                        recovered_repetition_words.append(
+                            TimedVerifiedWord(
+                                verified_index=verified_index_for_word,
+                                text=verified_word,
+                                start=round(
+                                    float(recognised_word.start),
+                                    3,
+                                ),
+                                end=round(
+                                    float(recognised_word.end),
+                                    3,
+                                ),
+                                confidence=round(
+                                    combined_confidences[offset],
+                                    6,
+                                ),
+                                recognised_text=recognised_word.text,
+                            )
+                        )
+
+                        matched_timestamp_keys.add(timestamp_key)
+
+                claimed_recognised_positions.update(
+                    candidate_positions
+                )
+
+            if recovered_repetition_words:
+                validated_words.extend(
+                    recovered_repetition_words
+                )
+
+                validated_words.sort(
+                    key=lambda word: (
+                        word.start,
+                        word.end,
+                    )
+                )
+
         # Narrow recovery for one missing FINAL Quran word.
         #
         # Whisper can occasionally fragment or slightly misrecognise the
