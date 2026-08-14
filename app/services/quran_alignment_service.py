@@ -6,6 +6,7 @@ from typing import Any, Protocol
 
 from app.services.quran_candidate_matcher import QuranCandidateMatcher
 from app.services.quran_corpus_service import QuranCorpus
+from app.services.quran_repetition_recovery_service import QuranRepetitionRecoveryService
 from app.services.quran_word_alignment_service import (
     QuranWordAlignmentResult,
     QuranWordAlignmentService,
@@ -262,6 +263,64 @@ class QuranAlignmentService:
                 recognised_words,
                 verified_word_text,
             )
+
+            # -------------------------------------------------
+            # Guarded repetition recovery
+            # -------------------------------------------------
+            #
+            # Some Quran repetitions can be collapsed by the
+            # speech recognizer into one abnormally long word.
+            #
+            # Recovery is supplementary only:
+            # - the original Quran candidate is already known
+            # - verified Quran text is already fixed
+            # - recovery must improve the Quran word alignment
+            # - surrounding aligned words must survive
+            # - any failure falls back to the original result
+            #
+            region_transcriber = getattr(
+                self.recognizer,
+                "transcribe_region",
+                None,
+            )
+
+            if (
+                word_alignment is not None
+                and callable(region_transcriber)
+            ):
+                try:
+                    recovery_service = (
+                        QuranRepetitionRecoveryService(
+                            recognizer=self.recognizer,
+                            word_aligner=self.word_aligner,
+                        )
+                    )
+
+                    recovery_result = (
+                        recovery_service.recover(
+                            audio_path=audio_path,
+                            recognised_words=recognised_words,
+                            verified_text=verified_word_text,
+                            baseline_alignment=word_alignment,
+                        )
+                    )
+
+                    if (
+                        recovery_result.word_alignment
+                        is not None
+                    ):
+                        recognised_words = (
+                            recovery_result.recognised_words
+                        )
+
+                        word_alignment = (
+                            recovery_result.word_alignment
+                        )
+
+                except Exception:
+                    # Repetition recovery must never make the
+                    # primary Quran alignment request fail.
+                    pass
 
             if word_alignment is not None:
                 verified_word_locations: list[
