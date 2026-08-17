@@ -78,6 +78,82 @@ def character_ngrams(
     }
 
 
+def select_partial_ayah_scoring_window(
+    transcript_words: list[str],
+    verified_words: list[str],
+) -> list[str]:
+    if not transcript_words or not verified_words:
+        return verified_words
+
+    # Very short Quran phrases can legitimately occur inside multiple Ayahs.
+    # Do not use partial-Ayah window scoring for such short transcripts,
+    # because doing so can make several different Ayahs appear to be
+    # identical perfect matches.
+    if len(transcript_words) < 8:
+        return verified_words
+
+    if len(verified_words) <= len(transcript_words) + 8:
+        return verified_words
+
+    matcher = SequenceMatcher(
+        None,
+        transcript_words,
+        verified_words,
+        autojunk=False,
+    )
+
+    block = matcher.find_longest_match(
+        0,
+        len(transcript_words),
+        0,
+        len(verified_words),
+    )
+
+    # Do not switch to partial-Ayah scoring unless there is a
+    # substantial contiguous anchor.
+    minimum_anchor = max(
+        4,
+        int(round(len(transcript_words) * 0.35)),
+    )
+
+    if block.size < minimum_anchor:
+        return verified_words
+
+    estimated_start = max(
+        0,
+        block.b - block.a,
+    )
+
+    # Score the candidate against the Quran span corresponding to the
+    # amount of speech actually present in the uploaded clip.
+    #
+    # The longest-match offset estimates where a partial recitation starts
+    # inside a long Ayah. We deliberately avoid adding arbitrary Quran words
+    # before or after that span because unrecited words must not lower Quran
+    # identification confidence.
+    start = min(
+        estimated_start,
+        max(0, len(verified_words) - 1),
+    )
+
+    end = min(
+        len(verified_words),
+        start + len(transcript_words),
+    )
+
+    # Keep a usable window if the estimated start lands very near the end.
+    if end - start < min(len(transcript_words), len(verified_words)):
+        start = max(
+            0,
+            end - min(
+                len(transcript_words),
+                len(verified_words),
+            ),
+        )
+
+    return verified_words[start:end]
+
+
 def dice_similarity(
     first: set[str],
     second: set[str],
@@ -276,8 +352,15 @@ class QuranCandidateMatcher:
                     if not verified_words:
                         continue
 
+                    scoring_words = select_partial_ayah_scoring_window(
+                        transcript_words,
+                        verified_words,
+                    )
+
+                    scoring_text = " ".join(scoring_words)
+
                     verified_word_set = set(
-                        verified_words
+                        scoring_words
                     )
 
                     shared_words = (
@@ -291,7 +374,7 @@ class QuranCandidateMatcher:
                     )
 
                     transcript_tokens = normalised_transcript.split()
-                    verified_tokens = normalised_verified.split()
+                    verified_tokens = scoring_words
 
                     sequence_similarity = (
                         SequenceMatcher(
@@ -320,17 +403,17 @@ class QuranCandidateMatcher:
 
                     fuzzy_coverage = fuzzy_word_coverage(
                         transcript_words,
-                        verified_words,
+                        scoring_words,
                     )
 
                     ngram_similarity = dice_similarity(
                         transcript_ngrams,
                         character_ngrams(
-                            normalised_verified
+                            scoring_text
                         ),
                     )
 
-                    phonetic_verified = phonetic_normalise(normalised_verified)
+                    phonetic_verified = phonetic_normalise(scoring_text)
 
                     phonetic_transcript_tokens = set(phonetic_transcript.split())
                     phonetic_verified_tokens = set(phonetic_verified.split())
@@ -350,12 +433,12 @@ class QuranCandidateMatcher:
 
                     shorter_length = min(
                         len(transcript_words),
-                        len(verified_words),
+                        len(scoring_words),
                     )
 
                     longer_length = max(
                         len(transcript_words),
-                        len(verified_words),
+                        len(scoring_words),
                     )
 
                     length_compatibility = (

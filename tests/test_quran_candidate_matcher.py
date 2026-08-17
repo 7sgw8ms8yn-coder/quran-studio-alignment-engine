@@ -117,3 +117,34 @@ def test_character_fragments_detect_imperfect_text() -> None:
     )
 
     assert dice_similarity(first, second) > 0.75
+
+def test_partial_long_ayah_transcript_is_not_under_scored() -> None:
+    corpus = load_quran_corpus()
+
+    matcher = QuranCandidateMatcher(
+        corpus,
+        max_sequence_length=6,
+    )
+
+    transcript = (
+        "وَاتَّبَعُوا مَا تَتْلُو الشَّيَاطِينُ عَلَى مُلْكِ "
+        "سُلَيْمَانَ وَمَا كَفَرَ سُلَيْمَانُ وَلَكِنَّ "
+        "الشَّيَاطِينَ كَفَرُوا يُعَلِّمُونَ النَّاسَ "
+        "السِّحْرَ وَمَا أُنْزِلَ عَلَى الْمَلَكَيْنِ "
+        "بِذَابِ الْهَارُوتَ وَمَا رُوتَ مَا يَغْفَى"
+    )
+
+    match = matcher.best_match(
+        transcript,
+        minimum_score=0.0,
+    )
+
+    assert match is not None
+    assert match.surah_number == 2
+    assert match.start_ayah == 102
+    assert match.end_ayah == 102
+
+    # A strong contiguous partial recitation of a long ayah should not be
+    # treated as a borderline Quran identification merely because the full
+    # ayah is much longer than the uploaded clip.
+    assert match.score >= 0.80
